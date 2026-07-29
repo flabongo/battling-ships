@@ -1306,15 +1306,18 @@ function cancelHeldPiece() {
 
 function showDragGhost(shape, colors, x, y) {
   const ghost = document.getElementById("drag-ghost");
-  // pieces while held look exactly like they do on the board: same size,
-  // fully opaque, same fan offset for a multi-piece pickup
+  // pieces while held are 15% larger than board pieces: same fan offset
+  // but minimal padding in the SVG container
   const r = BOARD_PIECE_R;
   const maxOff = (colors.length - 1) * BOARD_FAN_STEP;
-  const half = r + maxOff + r * 0.3;
+  // viewBox needs to fit all pieces
+  const viewHalf = r + maxOff + r * 0.2;
+  // but render at only 1.15x the piece size for visual feedback
+  const displaySize = r * 2.3;
   const svgIcon = svgEl("svg", {
-    viewBox: `${-half} ${-half} ${half * 2} ${half * 2}`,
-    width: half * 2,
-    height: half * 2,
+    viewBox: `${-viewHalf} ${-viewHalf} ${viewHalf * 2} ${viewHalf * 2}`,
+    width: displaySize,
+    height: displaySize,
   });
   colors.forEach((color, i) => {
     const off = i * BOARD_FAN_STEP;
@@ -1324,7 +1327,6 @@ function showDragGhost(shape, colors, x, y) {
   });
   ghost.innerHTML = "";
   ghost.appendChild(svgIcon);
-  svgIcon.style.transform = "scale(1.15)";
   ghost.style.left = x + "px";
   ghost.style.top = y + "px";
   ghost.classList.remove("hidden");
