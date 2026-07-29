@@ -152,6 +152,17 @@ html, body {
   pointer-events: none;
 }
 
+#move-path {
+  pointer-events: none;
+}
+.move-route-line {
+  opacity: 0.85;
+}
+.move-route-dot {
+  fill: #000;
+  opacity: 0.85;
+}
+
 .capture-boom {
   animation: captureBoom 0.5s ease-out forwards;
   transform-origin: 0 0;

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Battling Ships — Hex Board Prototype</title>
-<link rel="stylesheet" href="style.css?v=15">
+<link rel="stylesheet" href="style.css?v=16">
 </head>
 <body>
 
@@ -33,6 +33,7 @@
       <li>Click a tray piece, then click a highlighted hex in your front row to place it (0 or 1 per turn).</li>
       <li>Click a piece on the board (up to 2 per turn) to move it. In a stack, clicking a piece moves it and everything stacked above it — hover to preview what will move.</li>
       <li>Yellow moves 1, Red moves 2, Blue moves 3 hexes. The bottom piece being moved sets the range.</li>
+      <li>For multi-space moves, hover to trace the exact route (a black line trails behind you) — hop through opponents or coins along the way, not just at the end. Hover back to backtrack; going somewhere the trace can't simply reach snaps to a fresh route there.</li>
       <li>Landing on an opponent's hex captures their whole stack there. Landing on your own stacks (any color mix, max 3).</li>
       <li>The star token shows the coin-drop clock: it arrives on a player grey, turns yellow when they finish that turn (6 coins rain onto empty tiles), then passes on after their next turn — so coins drop every 4 turns.</li>
       <li>Land pieces on a tile holding coins to collect them into your bank.</li>
@@ -52,6 +53,6 @@
   </div>
 </div>
 
-<script src="app.js?v=16"></script>
+<script src="app.js?v=22"></script>
 </body>
 </html>

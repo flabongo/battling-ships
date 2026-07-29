@@ -55,6 +55,63 @@ function hexKey(q, r) {
   return q + "," + r;
 }
 
+function cubeRound(x, y, z) {
+  let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
+  const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
+  if (dx > dy && dx > dz) rx = -ry - rz;
+  else if (dy > dz) ry = -rx - rz;
+  else rz = -rx - ry;
+  return { x: rx, y: ry, z: rz };
+}
+
+// canonical straight hex line from a to b (inclusive of both), as a list of
+// hex descriptors pulled from state.hexIndex where possible
+function computeHexLine(a, b) {
+  const n = hexDistance(a, b);
+  const ac = axialToCube(a.q, a.r);
+  const bc = axialToCube(b.q, b.r);
+  const results = [];
+  for (let i = 0; i <= n; i++) {
+    const t = n === 0 ? 0 : i / n;
+    // tiny nudge avoids ties landing exactly on a hex edge
+    const x = ac.x + (bc.x - ac.x) * t + 1e-6;
+    const y = ac.y + (bc.y - ac.y) * t + 2e-6;
+    const z = ac.z + (bc.z - ac.z) * t - 3e-6;
+    const cube = cubeRound(x, y, z);
+    const q = cube.x, r = cube.z;
+    // fall back to a computed pixel position (not just {q,r}) in case
+    // rounding lands one hex outside the board near an edge — every point
+    // in this list must always have real x/y, or the hop animation math
+    // downstream produces NaN and the piece appears to jump unpredictably
+    results.push(state.hexIndex.get(hexKey(q, r)) || Object.assign({ q, r }, hexToPixel(q, r, HEX_SIZE)));
+  }
+  return results;
+}
+
+// smooth curve through every point (Catmull-Rom, converted to cubic bezier
+// segments) — unlike a simple corner-rounded polyline, this still passes
+// exactly through each point, so the curve stays centered on every hex it
+// visits rather than cutting corners short of them
+function catmullRomPathD(pts) {
+  if (pts.length < 2) return "";
+  if (pts.length === 2) {
+    return `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`;
+  }
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const c1x = p1.x + (p2.x - p0.x) / 6;
+    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6;
+    const c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${c1x} ${c1y} ${c2x} ${c2y} ${p2.x} ${p2.y}`;
+  }
+  return d;
+}
+
 function hexToPixel(q, r, size) {
   // pointy-top individual hexes -> flat-top overall hexagon (flat edge at bottom)
   return {
@@ -271,6 +328,9 @@ const state = {
   // discard any deferred effect (e.g. crediting a bank) that is now stale
   animGeneration: 0,
   viewHalf: 0,
+  // piece ids currently mid-hop-animation: already placed in the board
+  // data model at their destination, but not yet drawn there
+  hiddenPieceIds: new Set(),
 };
 
 function makePlayer(id, shape) {
@@ -289,7 +349,7 @@ function makePlayer(id, shape) {
 
 /* ===================== Build geometry ===================== */
 
-let svg, boardGroup, highlightHexes, coinsGroup, piecesGroup, traysGroup, tokenGroup, effectsGroup;
+let svg, boardGroup, highlightHexes, coinsGroup, pathGroup, piecesGroup, traysGroup, tokenGroup, effectsGroup;
 
 function buildGeometry() {
   const rawHexes = generateAllHexes(R);
@@ -379,6 +439,7 @@ function initSVG() {
 
   boardGroup = svgEl("g", { id: "board-hexes" });
   coinsGroup = svgEl("g", { id: "board-coins" });
+  pathGroup = svgEl("g", { id: "move-path" });
   piecesGroup = svgEl("g", { id: "board-pieces" });
   traysGroup = svgEl("g", { id: "trays" });
   tokenGroup = svgEl("g", { id: "first-player-token" });
@@ -386,6 +447,7 @@ function initSVG() {
 
   svg.appendChild(boardGroup);
   svg.appendChild(coinsGroup);
+  svg.appendChild(pathGroup);
   svg.appendChild(piecesGroup);
   svg.appendChild(traysGroup);
   svg.appendChild(tokenGroup);
@@ -402,6 +464,7 @@ function initSVG() {
       poly.classList.add("front-row", FRONT_ROW_CLASS[h.frontRowOwner]);
     }
     poly.addEventListener("click", () => onHexClick(h));
+    poly.addEventListener("mouseenter", () => onHexHover(h));
     boardGroup.appendChild(poly);
     h.el = poly;
   });
@@ -562,14 +625,20 @@ function renderTrays() {
 function getDisplayPieces(hexKeyStr) {
   const stack = state.board.get(hexKeyStr);
   if (!stack) return [];
+  let pieces = stack.pieces;
   if (
     state.heldPiece &&
     state.heldPiece.type === "board" &&
     state.heldPiece.hexId === hexKeyStr
   ) {
-    return stack.pieces.slice(0, stack.pieces.length - state.heldPiece.moveCount);
+    pieces = pieces.slice(0, pieces.length - state.heldPiece.moveCount);
   }
-  return stack.pieces;
+  // pieces mid-hop-animation are already in the board data at their
+  // destination but shouldn't be drawn there until the hop finishes
+  if (state.hiddenPieceIds.size > 0) {
+    pieces = pieces.filter((p) => !state.hiddenPieceIds.has(p.id));
+  }
+  return pieces;
 }
 
 function renderPieces() {
@@ -646,6 +715,9 @@ function onStackPieceClick(hexDesc, key, stack, clickedIndex, event) {
 const COIN_R = BOARD_PIECE_R * 0.46;
 const COIN_FAN_STEP = COIN_R * 0.45;
 const COINS_PER_DROP = 6;
+
+const HOP_DURATION_MS = 320;
+const HOP_HEIGHT = BOARD_PIECE_R * 0.55;
 
 function renderCoins() {
   coinsGroup.innerHTML = "";
@@ -1004,6 +1076,11 @@ function onHexClick(hexDesc) {
       cancelHeldPiece();
       return;
     }
+    // make sure the traced route actually ends here even if this hex was
+    // never hovered first (e.g. a quick click right after pickup)
+    if (state.heldPiece.type === "board") {
+      updateMovePath(hexDesc);
+    }
     attemptDrop(key);
     return;
   }
@@ -1019,6 +1096,12 @@ function onHexClick(hexDesc) {
   }
 }
 
+function onHexHover(hexDesc) {
+  if (state.heldPiece && state.heldPiece.type === "board") {
+    updateMovePath(hexDesc);
+  }
+}
+
 function beginBoardPickup(hexDesc, key, stack, moveCount, event) {
   const movedPieces = stack.pieces.slice(-moveCount);
   const colors = movedPieces.map((p) => p.color);
@@ -1029,12 +1112,102 @@ function beginBoardPickup(hexDesc, key, stack, moveCount, event) {
     colors,
     pieceIds: movedPieces.map((p) => p.id),
     playerId: stack.playerId,
+    path: [hexDesc],
   };
   computeValidMoveTargets(hexDesc, colors);
   renderPieces();
   applyHighlightClasses();
+  renderMovePath();
   const player = state.players[stack.playerId];
   showDragGhost(player.shape, colors, event.clientX, event.clientY);
+}
+
+/* ===================== Move route tracing ===================== */
+
+// Multi-space pieces can trace a specific hop-by-hop route to their
+// destination instead of just picking an end point: hovering extends the
+// route hex by hex, hovering back over an earlier hex in the route
+// backtracks to it, and hovering somewhere the route can't simply reach
+// (because it would exceed the piece's range) snaps to a fresh straight
+// route to that hex instead.
+function updateMovePath(hoveredHexDesc) {
+  const held = state.heldPiece;
+  if (!held || held.type !== "board") return;
+  const path = held.path;
+  const source = path[0];
+
+  if (hoveredHexDesc.q === source.q && hoveredHexDesc.r === source.r) {
+    if (path.length > 1) {
+      held.path = [source];
+      renderMovePath();
+    }
+    return;
+  }
+
+  const range = MOVE_RANGE[held.colors[0]];
+  if (hexDistance(source, hoveredHexDesc) > range) return; // out of reach, ignore
+
+  // backtrack: hovered hex is already on the current route
+  const idx = path.findIndex((h) => h.q === hoveredHexDesc.q && h.r === hoveredHexDesc.r);
+  if (idx !== -1) {
+    if (idx !== path.length - 1) {
+      held.path = path.slice(0, idx + 1);
+      renderMovePath();
+    }
+    return;
+  }
+
+  const last = path[path.length - 1];
+
+  // simple extension: hovered hex is adjacent to the route's current end
+  // and there's still room within the piece's range
+  if (hexDistance(last, hoveredHexDesc) === 1 && path.length - 1 < range) {
+    held.path = path.concat([hoveredHexDesc]);
+    renderMovePath();
+    return;
+  }
+
+  // snap: the freeform trace can't simply reach this hex anymore (it would
+  // take more hops than the piece has), so replace it with the canonical
+  // straight route from the source
+  held.path = computeHexLine(source, hoveredHexDesc);
+  renderMovePath();
+}
+
+function renderMovePath() {
+  pathGroup.innerHTML = "";
+  const held = state.heldPiece;
+  if (!held || held.type !== "board" || !held.path || held.path.length < 2) return;
+  const pts = held.path.map((h) => {
+    const d = state.hexIndex.get(hexKey(h.q, h.r)) || h;
+    return { x: d.x, y: d.y };
+  });
+
+  const line = svgEl("path", {
+    d: catmullRomPathD(pts),
+    fill: "none",
+    stroke: "#000",
+    "stroke-width": 5,
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    class: "move-route-line",
+  });
+  pathGroup.appendChild(line);
+
+  // the held puck sits right on the last hex's center — stop the line at
+  // its edge instead of drawing underneath/through it. Trimming by arc
+  // length (not a straight-line shortcut) keeps this accurate even though
+  // the path curves.
+  const total = line.getTotalLength();
+  const visible = Math.max(0, total - BOARD_PIECE_R);
+  line.setAttribute("stroke-dasharray", visible <= 0.01 ? `0 ${total + 1}` : `${visible} ${total}`);
+
+  pts.forEach((p, i) => {
+    if (i === 0 || i === pts.length - 1) return; // no dot on the origin or the puck-covered end
+    pathGroup.appendChild(
+      svgEl("circle", { cx: p.x, cy: p.y, r: 5, class: "move-route-dot" })
+    );
+  });
 }
 
 function computeValidMoveTargets(sourceHexDesc, colors) {
@@ -1137,7 +1310,9 @@ function undo() {
   }
   state.heldPiece = null;
   state.validTargets = new Set();
+  state.hiddenPieceIds = new Set();
   hideDragGhost();
+  pathGroup.innerHTML = "";
   const snap = state.history.pop();
   restoreSnapshot(snap);
   document.getElementById("winner-banner").classList.toggle("hidden", !state.gameOver);
@@ -1263,11 +1438,9 @@ function executeTrayPlacement(targetKey) {
 }
 
 function executeBoardMove(targetKey) {
-  const { hexId, moveCount, pieceIds, playerId } = state.heldPiece;
+  const { hexId, moveCount, pieceIds, playerId, path } = state.heldPiece;
   const sourceStack = state.board.get(hexId);
   const movedPieces = sourceStack.pieces.slice(-moveCount);
-
-  captureIfOpponent(targetKey, playerId);
 
   const remaining = sourceStack.pieces.length - moveCount;
   if (remaining <= 0) {
@@ -1276,21 +1449,143 @@ function executeBoardMove(targetKey) {
     sourceStack.pieces = sourceStack.pieces.slice(0, remaining);
   }
 
-  const destExisting = state.board.get(targetKey);
-  if (destExisting && destExisting.playerId === playerId) {
-    destExisting.pieces.push(...movedPieces);
-  } else {
-    state.board.set(targetKey, { playerId, pieces: movedPieces.slice() });
-  }
+  // hop along the traced route if there is one ending here, otherwise a
+  // plain direct hop (e.g. a click with no prior hover)
+  const sourceHexDesc = state.hexIndex.get(hexId);
+  const targetHexDesc = state.hexIndex.get(targetKey);
+  const tracedEnd = path && path.length > 1 ? path[path.length - 1] : null;
+  const hopPath =
+    tracedEnd && tracedEnd.q === targetHexDesc.q && tracedEnd.r === targetHexDesc.r
+      ? path
+      : [sourceHexDesc, targetHexDesc];
 
   // only the anchor (bottommost piece of this move's selection) is locked
   // for the rest of the turn — passengers riding above it can still be
   // picked out and moved independently later this turn
   state.movedPieceIds.add(pieceIds[0]);
   state.movesUsed += 1;
-  collectCoinsAt(targetKey, playerId);
+
+  // the moved pieces are logically gone from the source already, but stay
+  // invisible until the hop animation delivers them to their destination
+  state.hiddenPieceIds = new Set(pieceIds);
   clearHeldPieceState();
   rerenderAll();
+
+  animateHopMove(hopPath, movedPieces, playerId);
+}
+
+// animates a piece/stack hopping tile by tile along hopPath (hopPath[0] is
+// the tile it's leaving). Every tile it passes through or lands on — not
+// just the final one — triggers captures and coin collection at the
+// moment the hop visually arrives there, so a single multi-space move can
+// hit several opponents or scoop up several coin piles along the way.
+function animateHopMove(hopPath, movedPieces, playerId) {
+  const gen = state.animGeneration;
+  const player = state.players[playerId];
+  const waypoints = hopPath.slice(1); // excludes the origin tile
+  const colors = movedPieces.map((p) => p.color);
+
+  // must start at the origin tile's position immediately — leaving the
+  // transform unset until the first animation frame lands means it briefly
+  // renders at the SVG's (0,0) origin (the board's center), which looks
+  // like the piece glitches to a wrong spot before snapping into place
+  const ghost = svgEl("g", { transform: `translate(${hopPath[0].x}, ${hopPath[0].y})` });
+  colors.forEach((color, i) => {
+    const off = i * BOARD_FAN_STEP;
+    const s = shapeElement(player.shape, COLORS[color], BOARD_PIECE_R, {});
+    s.setAttribute("transform", `translate(${-off}, ${-off})`);
+    ghost.appendChild(s);
+  });
+  effectsGroup.appendChild(ghost);
+
+  const totalDuration = waypoints.length * HOP_DURATION_MS;
+  // anchored to the first frame that actually runs rather than to now, so
+  // any delay between scheduling and that frame doesn't eat into the hop
+  let startTime = null;
+  // index of the next waypoint whose capture/coin/placement effects still
+  // need to fire — driven off the SAME clock as the visual hop below, so
+  // the reveal can never desync from (or outrun) the animation
+  let nextWaypointIdx = 0;
+
+  function resolveWaypoint(i) {
+    const hexDesc = waypoints[i];
+    const key = hexKey(hexDesc.q, hexDesc.r);
+    const isFinal = i === waypoints.length - 1;
+    captureIfOpponent(key, playerId);
+    if (isFinal) {
+      const destExisting = state.board.get(key);
+      if (destExisting && destExisting.playerId === playerId) {
+        destExisting.pieces.push(...movedPieces);
+      } else {
+        state.board.set(key, { playerId, pieces: movedPieces.slice() });
+      }
+      movedPieces.forEach((p) => state.hiddenPieceIds.delete(p.id));
+    }
+    collectCoinsAt(key, playerId);
+    // a full rerenderAll() also rebuilds the token graphic and re-applies
+    // highlight classes across every hex — neither changes mid-hop (no
+    // piece is held), and that wasted work eats into the frame budget on
+    // slower devices, which can visibly stutter the hop. Only refresh what
+    // captures/coin-collection can actually change.
+    renderPieces();
+    renderCoins();
+    renderTrays();
+  }
+
+  function finish() {
+    // catches up on any waypoints the frame loop never reached (e.g. the
+    // tab was backgrounded and requestAnimationFrame stopped firing) so
+    // the move always resolves correctly even without a visible animation
+    while (nextWaypointIdx < waypoints.length) {
+      resolveWaypoint(nextWaypointIdx);
+      nextWaypointIdx++;
+    }
+    ghost.remove();
+  }
+
+  function frame(now) {
+    if (gen !== state.animGeneration) {
+      ghost.remove();
+      return;
+    }
+    if (startTime === null) startTime = now;
+    // Chrome dispatches input events *before* the rAF callbacks of the
+    // same frame, so a rAF scheduled from a click handler can fire in that
+    // very frame carrying a timestamp from before the handler ran — making
+    // this negative. Left unclamped it floors to segIdx -1, hopPath[-1] is
+    // undefined, and reading .x throws inside the callback: the loop then
+    // never reschedules and the move silently teleports via the fallback.
+    const elapsed = Math.max(0, now - startTime);
+    const segFloat = Math.min(waypoints.length, elapsed / HOP_DURATION_MS);
+    const segIdx = Math.min(waypoints.length - 1, Math.max(0, Math.floor(segFloat)));
+    const segT = Math.min(1, Math.max(0, segFloat - segIdx));
+    const from = hopPath[segIdx];
+    const to = hopPath[segIdx + 1];
+    const x = from.x + (to.x - from.x) * segT;
+    const y = from.y + (to.y - from.y) * segT;
+    const bounce = Math.sin(Math.PI * segT) * HOP_HEIGHT;
+    ghost.setAttribute("transform", `translate(${x}, ${y - bounce})`);
+
+    // resolve every waypoint the hop has now visually reached — using
+    // this frame's own elapsed time means the reveal always happens on
+    // the exact frame the ghost arrives, never before and never after
+    while (nextWaypointIdx < waypoints.length && elapsed >= (nextWaypointIdx + 1) * HOP_DURATION_MS) {
+      resolveWaypoint(nextWaypointIdx);
+      nextWaypointIdx++;
+    }
+
+    if (elapsed < totalDuration) {
+      requestAnimationFrame(frame);
+    } else {
+      finish();
+    }
+  }
+  requestAnimationFrame(frame);
+  // rAF pauses while the tab is hidden; guarantee the move still resolves
+  setTimeout(() => {
+    if (gen !== state.animGeneration) return;
+    finish();
+  }, totalDuration + 400);
 }
 
 function clearHeldPieceState() {
@@ -1298,6 +1593,7 @@ function clearHeldPieceState() {
   state.validTargets = new Set();
   hideDragGhost();
   clearHighlights();
+  pathGroup.innerHTML = "";
 }
 
 function cancelHeldPiece() {
