@@ -968,6 +968,10 @@ function onTraySlotClick(player, color, clickable, event) {
   }
   state.heldPiece = { type: "tray", color, playerId: player.id };
   computeValidPlaceTargets(player, color);
+  // re-render so board pieces lose their hover/click interactivity while a
+  // piece is held (otherwise stale listeners from before pickup keep
+  // highlighting on hover and swallow clicks meant for the hex underneath)
+  renderPieces();
   applyHighlightClasses();
   showDragGhost(player.shape, [color], event.clientX, event.clientY);
 }
@@ -1312,8 +1316,12 @@ function showDragGhost(shape, colors, x, y) {
   const maxOff = (colors.length - 1) * BOARD_FAN_STEP;
   // viewBox needs to fit all pieces
   const viewHalf = r + maxOff + r * 0.2;
-  // render at only 1.15x the piece radius for visual feedback
-  const displaySize = r * 1.15;
+  // keep a constant screen-px-per-viewBox-unit scale (calibrated so a
+  // single piece renders at 1.15x its board radius) so a whole stack scales
+  // the same way a single piece does, instead of shrinking as it grows
+  const singlePieceViewHalf = r * 1.2;
+  const ghostScale = (r * 1.15) / (2 * singlePieceViewHalf);
+  const displaySize = viewHalf * 2 * ghostScale;
   const svgIcon = svgEl("svg", {
     viewBox: `${-viewHalf} ${-viewHalf} ${viewHalf * 2} ${viewHalf * 2}`,
     width: displaySize,
