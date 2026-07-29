@@ -1312,8 +1312,8 @@ function showDragGhost(shape, colors, x, y) {
   const maxOff = (colors.length - 1) * BOARD_FAN_STEP;
   // viewBox needs to fit all pieces
   const viewHalf = r + maxOff + r * 0.2;
-  // but render at only 1.15x the piece size for visual feedback
-  const displaySize = r * 2.3;
+  // render at only 1.15x the piece radius for visual feedback
+  const displaySize = r * 1.15;
   const svgIcon = svgEl("svg", {
     viewBox: `${-viewHalf} ${-viewHalf} ${viewHalf * 2} ${viewHalf * 2}`,
     width: displaySize,
