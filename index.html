@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Battling Ships — Hex Board Prototype</title>
+<link rel="stylesheet" href="style.css?v=15">
+</head>
+<body>
+
+<div id="status-bar">
+  <div id="turn-indicator">
+    <span id="turn-shape-icon" class="shape-icon"></span>
+    <span id="turn-text">Loading…</span>
+  </div>
+  <button id="legend-toggle">How to play</button>
+  <button id="undo-btn">Undo</button>
+  <button id="finish-turn-btn">Finish Turn</button>
+</div>
+
+<div id="message-toast"></div>
+
+<div id="board-wrap">
+  <svg id="board-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+</div>
+
+<div id="legend-modal" class="hidden">
+  <div id="legend-backdrop"></div>
+  <div id="legend">
+    <div class="legend-title">How to play</div>
+    <ul>
+      <li>Each player starts with 10 coins. Yellow costs 1, Red costs 3, Blue costs 6 — paid from your bank when you place a piece. Can't afford it, can't select it.</li>
+      <li>Click a tray piece, then click a highlighted hex in your front row to place it (0 or 1 per turn).</li>
+      <li>Click a piece on the board (up to 2 per turn) to move it. In a stack, clicking a piece moves it and everything stacked above it — hover to preview what will move.</li>
+      <li>Yellow moves 1, Red moves 2, Blue moves 3 hexes. The bottom piece being moved sets the range.</li>
+      <li>Landing on an opponent's hex captures their whole stack there. Landing on your own stacks (any color mix, max 3).</li>
+      <li>The star token shows the coin-drop clock: it arrives on a player grey, turns yellow when they finish that turn (6 coins rain onto empty tiles), then passes on after their next turn — so coins drop every 4 turns.</li>
+      <li>Land pieces on a tile holding coins to collect them into your bank.</li>
+      <li>Press Esc or click your tray to put a held piece back. Use Undo to step back through moves.</li>
+      <li>First to place all Yellow, Red &amp; Blue pieces wins.</li>
+    </ul>
+    <button id="legend-close">Close</button>
+  </div>
+</div>
+
+<div id="drag-ghost" class="hidden"></div>
+
+<div id="winner-banner" class="hidden">
+  <div id="winner-banner-inner">
+    <div id="winner-text"></div>
+    <button id="restart-btn">New Game</button>
+  </div>
+</div>
+
+<script src="app.js?v=15"></script>
+</body>
+</html>
