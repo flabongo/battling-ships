@@ -1324,6 +1324,7 @@ function showDragGhost(shape, colors, x, y) {
   });
   ghost.innerHTML = "";
   ghost.appendChild(svgIcon);
+  svgIcon.style.transform = "scale(1.15)";
   ghost.style.left = x + "px";
   ghost.style.top = y + "px";
   ghost.classList.remove("hidden");
