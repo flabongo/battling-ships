@@ -473,6 +473,9 @@ function initSVG() {
   renderPieces();
   renderToken();
   updateStatusBar();
+  // the star starts yellow on player 1, so the very first turn already
+  // qualifies for a coin drop before anyone has moved
+  maybeDropCoinsForTurnStart();
 
   document.getElementById("finish-turn-btn").addEventListener("click", finishTurn);
   document.getElementById("undo-btn").addEventListener("click", undo);
@@ -1660,24 +1663,30 @@ function finishTurn() {
   state.movedPieceIds = new Set();
 
   // Advance the first-player token. It arrives on a player grey; at the end
-  // of that player's turn it flips yellow (and coins drop); it then sits
-  // yellow until that same player finishes another turn, when it moves on
-  // to the next player and goes grey again. That makes one full token step
-  // take 4 turns, which is the coin-drop cadence.
-  let coinsDrop = false;
+  // of that player's turn it flips yellow; it then sits yellow until that
+  // same player finishes another turn, when it moves on to the next player
+  // and goes grey again. That makes one full token step take 4 turns.
   if (state.currentPlayerIndex === state.starHolder) {
     if (state.starYellow) {
       state.starHolder = (state.starHolder + 1) % state.players.length;
       state.starYellow = false;
     } else {
       state.starYellow = true;
-      coinsDrop = true;
     }
   }
 
   state.currentPlayerIndex = (state.currentPlayerIndex + 1) % state.players.length;
   rerenderAll();
-  if (coinsDrop) {
+  maybeDropCoinsForTurnStart();
+}
+
+// coins drop at the START of a turn whose player already holds the yellow
+// star — not at the moment it flips (that flip happens at the end of a
+// DIFFERENT player's turn, before the star holder has actually started
+// theirs). Called once at game init (the star starts yellow on player 1)
+// and again at the top of every subsequent turn.
+function maybeDropCoinsForTurnStart() {
+  if (state.starYellow && state.starHolder === state.currentPlayerIndex) {
     dropCoins();
   } else {
     showMessage(`${state.players[state.currentPlayerIndex].label}'s turn.`);
