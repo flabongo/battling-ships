@@ -94,6 +94,40 @@ html, body {
 #undo-btn:hover { background: rgba(255,255,255,0.18); }
 #undo-btn:active { transform: translateY(1px); }
 
+/* pushed to the far right of the status bar */
+#mode-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mode-btn {
+  background: rgba(255,255,255,0.1);
+  border: 1px solid #7a6144;
+  color: #f0e6d6;
+  border-radius: 6px;
+  /* matches #undo-btn's box so all three sit at the same height */
+  padding: 8px 12px;
+  height: 35px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+.mode-btn svg {
+  width: 30px;
+  height: 20px;
+  display: block;
+}
+.mode-btn:hover { background: rgba(255,255,255,0.18); }
+.mode-btn:active { transform: translateY(1px); }
+.mode-btn.active {
+  background: rgba(255, 207, 125, 0.18);
+  border-color: #ffcf7d;
+  color: #ffcf7d;
+  cursor: default;
+}
+.mode-btn.active:active { transform: none; }
+
 #board-wrap {
   position: fixed;
   top: 56px;
@@ -287,6 +321,60 @@ html, body {
   font-weight: 600;
   cursor: pointer;
 }
+
+#confirm-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#confirm-modal.hidden { display: none; }
+#confirm-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+}
+#confirm-box {
+  position: relative;
+  max-width: 340px;
+  background: #2b2118;
+  border: 1px solid #7a6144;
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+}
+#confirm-text {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+  margin-bottom: 16px;
+}
+#confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+#confirm-yes, #confirm-no {
+  border-radius: 6px;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#confirm-yes {
+  background: #c0432f;
+  color: #fff;
+  border: none;
+}
+#confirm-yes:hover { background: #d94f37; }
+#confirm-no {
+  background: rgba(255,255,255,0.1);
+  border: 1px solid #7a6144;
+  color: #f0e6d6;
+}
+#confirm-no:hover { background: rgba(255,255,255,0.18); }
 
 #drag-ghost {
   position: fixed;

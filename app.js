@@ -37,6 +37,15 @@ const SHAPES = ["circle", "square", "triangle"];
 const SHAPE_LABELS = { circle: "Circles", square: "Squares", triangle: "Triangles" };
 const FRONT_ROW_CLASS = ["front-row-p0", "front-row-p1", "front-row-p2"];
 
+// which shapes play, and which edges of the big hexagon they sit on, per
+// mode. In 2-player, Circles keep the bottom edge and Squares take the one
+// directly opposite (+3 of 6); in 3-player the three are spaced evenly.
+const MODES = {
+  2: { shapes: ["circle", "square"], edgeOffsets: [0, 3] },
+  3: { shapes: ["circle", "square", "triangle"], edgeOffsets: [0, 2, 4] },
+};
+const DEFAULT_MODE = 3;
+
 /* ===================== Hex math ===================== */
 
 function axialToCube(q, r) {
@@ -341,6 +350,12 @@ const state = {
   // piece ids currently mid-hop-animation: already placed in the board
   // data model at their destination, but not yet drawn there
   hiddenPieceIds: new Set(),
+  // 2 or 3 players
+  mode: DEFAULT_MODE,
+  // index of the bottom-most edge group, cached from board generation so
+  // player edges can be reassigned on a mode change
+  bottomEdgeIdx: 0,
+  edgeGroups: [],
 };
 
 function makePlayer(id, shape) {
@@ -361,7 +376,7 @@ function makePlayer(id, shape) {
 
 let svg, boardGroup, highlightHexes, coinsGroup, pathGroup, piecesGroup, traysGroup, tokenGroup, effectsGroup;
 
-function buildGeometry() {
+function buildBoardHexes() {
   const rawHexes = generateAllHexes(R);
   let maxExtent = 0;
   rawHexes.forEach((h) => {
@@ -388,10 +403,24 @@ function buildGeometry() {
       bottomIdx = idx;
     }
   });
+  state.edgeGroups = edgeGroups;
+  state.bottomEdgeIdx = bottomIdx;
+}
 
-  const playerEdgeIdx = [bottomIdx, (bottomIdx + 2) % 6, (bottomIdx + 4) % 6];
+// (re)builds state.players and their board edges for the given mode. Safe to
+// call again on a mode change: front-row ownership is cleared first, since
+// 2- and 3-player modes claim different edges.
+function assignPlayersForMode(mode) {
+  const cfg = MODES[mode];
+  const edgeGroups = state.edgeGroups;
+  const bottomIdx = state.bottomEdgeIdx;
 
-  state.players = SHAPES.map((shape, i) => makePlayer(i, shape));
+  state.hexes.forEach((h) => {
+    h.frontRowOwner = null;
+  });
+
+  const playerEdgeIdx = cfg.edgeOffsets.map((off) => (bottomIdx + off) % 6);
+  state.players = cfg.shapes.map((shape, i) => makePlayer(i, shape));
 
   playerEdgeIdx.forEach((edgeIdx, playerId) => {
     const group = edgeGroups[edgeIdx];
@@ -470,19 +499,18 @@ function initSVG() {
       "data-q": h.q,
       "data-r": h.r,
     });
-    if (h.frontRowOwner != null) {
-      poly.classList.add("front-row", FRONT_ROW_CLASS[h.frontRowOwner]);
-    }
     poly.addEventListener("click", (e) => onHexClick(h, e));
     poly.addEventListener("mouseenter", (e) => onHexHover(h, e));
     boardGroup.appendChild(poly);
     h.el = poly;
   });
 
+  applyFrontRowClasses();
   renderTrays();
   renderPieces();
   renderToken();
   updateStatusBar();
+  updateModeButtons();
   // the star starts yellow on player 1, so the very first turn already
   // qualifies for a coin drop before anyone has moved
   maybeDropCoinsForTurnStart();
@@ -490,6 +518,11 @@ function initSVG() {
   document.getElementById("finish-turn-btn").addEventListener("click", finishTurn);
   document.getElementById("undo-btn").addEventListener("click", undo);
   document.getElementById("restart-btn").addEventListener("click", () => location.reload());
+  document.getElementById("mode-2-btn").addEventListener("click", () => requestModeChange(2));
+  document.getElementById("mode-3-btn").addEventListener("click", () => requestModeChange(3));
+  document.getElementById("confirm-yes").addEventListener("click", acceptConfirm);
+  document.getElementById("confirm-no").addEventListener("click", hideConfirm);
+  document.getElementById("confirm-backdrop").addEventListener("click", hideConfirm);
   document.getElementById("legend-toggle").addEventListener("click", () => {
     document.getElementById("legend-modal").classList.remove("hidden");
   });
@@ -502,6 +535,7 @@ function initSVG() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       document.getElementById("legend-modal").classList.add("hidden");
+      hideConfirm();
       cancelHeldPiece();
     }
   });
@@ -999,6 +1033,97 @@ function rerenderAll() {
   applyHighlightClasses();
 }
 
+/* ===================== Player-count mode ===================== */
+
+function applyFrontRowClasses() {
+  state.hexes.forEach((h) => {
+    h.el.classList.remove("front-row", ...FRONT_ROW_CLASS);
+    if (h.frontRowOwner != null) {
+      h.el.classList.add("front-row", FRONT_ROW_CLASS[h.frontRowOwner]);
+    }
+  });
+}
+
+function updateModeButtons() {
+  [2, 3].forEach((m) => {
+    const btn = document.getElementById(`mode-${m}-btn`);
+    if (btn) btn.classList.toggle("active", state.mode === m);
+  });
+}
+
+// has anything actually happened that would be lost by starting over?
+function gameInProgress() {
+  return (
+    state.board.size > 0 ||
+    state.history.length > 0 ||
+    state.placedThisTurn ||
+    state.movesUsed > 0 ||
+    state.currentPlayerIndex !== 0
+  );
+}
+
+function requestModeChange(mode) {
+  if (mode === state.mode) return; // already in this mode; nothing to do
+  if (!gameInProgress()) {
+    startNewGame(mode);
+    return;
+  }
+  showConfirm("Do you want to abandon this game?", () => {
+    // snapshot first so Undo can bring the abandoned game back intact
+    pushHistory();
+    startNewGame(mode);
+  });
+}
+
+function startNewGame(mode) {
+  state.mode = mode;
+  state.board = new Map();
+  state.coins = new Map();
+  state.currentPlayerIndex = 0;
+  state.placedThisTurn = false;
+  state.movesUsed = 0;
+  state.movedPieceIds = new Set();
+  state.heldPiece = null;
+  state.validTargets = new Set();
+  state.hiddenPieceIds = new Set();
+  state.gameOver = false;
+  state.starHolder = 0;
+  state.starYellow = true;
+  // invalidate any in-flight hop/coin animation from the abandoned game
+  state.animGeneration++;
+
+  assignPlayersForMode(mode);
+  applyFrontRowClasses();
+  hideDragGhost();
+  pathGroup.innerHTML = "";
+  effectsGroup.innerHTML = "";
+  document.getElementById("winner-banner").classList.add("hidden");
+  updateModeButtons();
+  rerenderAll();
+  maybeDropCoinsForTurnStart();
+}
+
+/* ===================== Confirm dialog ===================== */
+
+let confirmAction = null;
+
+function showConfirm(message, onYes) {
+  confirmAction = onYes;
+  document.getElementById("confirm-text").textContent = message;
+  document.getElementById("confirm-modal").classList.remove("hidden");
+}
+
+function hideConfirm() {
+  confirmAction = null;
+  document.getElementById("confirm-modal").classList.add("hidden");
+}
+
+function acceptConfirm() {
+  const action = confirmAction;
+  hideConfirm();
+  if (action) action();
+}
+
 /* ===================== Highlighting ===================== */
 
 function clearHighlights() {
@@ -1391,6 +1516,7 @@ function snapshotState() {
     coins: Array.from(state.coins.entries()),
     starHolder: state.starHolder,
     starYellow: state.starYellow,
+    mode: state.mode,
   };
 }
 
@@ -1399,6 +1525,15 @@ function pushHistory() {
 }
 
 function restoreSnapshot(snap) {
+  // Undoing across a mode change (i.e. bringing back an abandoned game)
+  // has to rebuild the players and their board edges before any per-player
+  // data below can be restored onto them.
+  if (snap.mode !== state.mode) {
+    state.mode = snap.mode;
+    assignPlayersForMode(snap.mode);
+    applyFrontRowClasses();
+    updateModeButtons();
+  }
   state.board = new Map(
     snap.board.map(([key, stack]) => [
       key,
@@ -1827,7 +1962,8 @@ function checkWin(player) {
 /* ===================== Init ===================== */
 
 function init() {
-  buildGeometry();
+  buildBoardHexes();
+  assignPlayersForMode(state.mode);
   initSVG();
 }
 

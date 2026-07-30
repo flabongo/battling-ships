@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Battling Ships — Hex Board Prototype</title>
-<link rel="stylesheet" href="style.css?v=17">
+<link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
 
@@ -16,6 +16,37 @@
   <button id="legend-toggle">How to play</button>
   <button id="undo-btn">Undo</button>
   <button id="finish-turn-btn">Finish Turn</button>
+  <div id="mode-controls">
+    <button id="mode-2-btn" class="mode-btn" title="2-player game (Circles vs Squares)" aria-label="2 player mode">
+      <svg viewBox="0 0 30 20" fill="currentColor" aria-hidden="true">
+        <circle cx="11" cy="6.4" r="2.6"/>
+        <path d="M7.4 17 A3.6 3.6 0 0 1 14.6 17 Z"/>
+        <circle cx="19" cy="6.4" r="2.6"/>
+        <path d="M15.4 17 A3.6 3.6 0 0 1 22.6 17 Z"/>
+      </svg>
+    </button>
+    <button id="mode-3-btn" class="mode-btn" title="3-player game (Circles vs Squares vs Triangles)" aria-label="3 player mode">
+      <svg viewBox="0 0 30 20" fill="currentColor" aria-hidden="true">
+        <circle cx="7" cy="6.4" r="2.6"/>
+        <path d="M3.4 17 A3.6 3.6 0 0 1 10.6 17 Z"/>
+        <circle cx="15" cy="6.4" r="2.6"/>
+        <path d="M11.4 17 A3.6 3.6 0 0 1 18.6 17 Z"/>
+        <circle cx="23" cy="6.4" r="2.6"/>
+        <path d="M19.4 17 A3.6 3.6 0 0 1 26.6 17 Z"/>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<div id="confirm-modal" class="hidden">
+  <div id="confirm-backdrop"></div>
+  <div id="confirm-box">
+    <div id="confirm-text"></div>
+    <div id="confirm-actions">
+      <button id="confirm-yes">Yes</button>
+      <button id="confirm-no">No</button>
+    </div>
+  </div>
 </div>
 
 <div id="message-toast"></div>
@@ -36,7 +67,8 @@
       <li>For multi-space moves, hover to trace the exact route (a black line trails behind you) — hop through opponents or coins along the way, not just at the end. Hover back to backtrack; going somewhere the trace can't simply reach snaps to a fresh route there.</li>
       <li>Hold <strong>Ctrl</strong> (or Cmd) while tracing to let a route double back over itself — e.g. step out onto a coin and return home, or strike an opponent and retreat. Each step gets numbered so you can read the order, and you can finish back on the hex you started from.</li>
       <li>Landing on an opponent's hex captures their whole stack there. Landing on your own stacks (any color mix, max 3).</li>
-      <li>The star token shows the coin-drop clock: it arrives on a player grey, turns yellow when they finish that turn (6 coins rain onto empty tiles), then passes on after their next turn — so coins drop every 4 turns.</li>
+      <li>Use the buttons at the top right to start a 2-player game (Circles vs Squares, on opposite edges) or a 3-player game. Switching mid-game asks first, and Undo will bring the abandoned game back.</li>
+      <li>The star token shows the coin-drop clock. 6 coins rain onto empty tiles at the start of any turn where the active player holds a yellow star — that's every 4 turns with 3 players, every 3 turns with 2.</li>
       <li>Land pieces on a tile holding coins to collect them into your bank.</li>
       <li>Press Esc or click your tray to put a held piece back. Use Undo to step back through moves.</li>
       <li>First to place all Yellow, Red &amp; Blue pieces wins.</li>
@@ -54,6 +86,6 @@
   </div>
 </div>
 
-<script src="app.js?v=24"></script>
+<script src="app.js?v=25"></script>
 </body>
 </html>
