@@ -55,6 +55,16 @@ function hexKey(q, r) {
   return q + "," + r;
 }
 
+function sameHex(a, b) {
+  return a.q === b.q && a.r === b.r;
+}
+
+// Ctrl (or Cmd) unlocks "free" route tracing, where a route may double back
+// over hexes it has already used
+function isFreePathEvent(e) {
+  return !!e && (e.ctrlKey || e.metaKey);
+}
+
 function cubeRound(x, y, z) {
   let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
   const dx = Math.abs(rx - x), dy = Math.abs(ry - y), dz = Math.abs(rz - z);
@@ -463,8 +473,8 @@ function initSVG() {
     if (h.frontRowOwner != null) {
       poly.classList.add("front-row", FRONT_ROW_CLASS[h.frontRowOwner]);
     }
-    poly.addEventListener("click", () => onHexClick(h));
-    poly.addEventListener("mouseenter", () => onHexHover(h));
+    poly.addEventListener("click", (e) => onHexClick(h, e));
+    poly.addEventListener("mouseenter", (e) => onHexHover(h, e));
     boardGroup.appendChild(poly);
     h.el = poly;
   });
@@ -1069,20 +1079,24 @@ function computeValidPlaceTargets(player, color) {
 
 /* ===================== Interaction: Board pieces ===================== */
 
-function onHexClick(hexDesc) {
+function onHexClick(hexDesc, event) {
   if (state.gameOver) return;
   const key = hexKey(hexDesc.q, hexDesc.r);
 
   if (state.heldPiece) {
-    // clicking the source hex of a board pickup cancels the move, same as Escape
-    if (state.heldPiece.type === "board" && state.heldPiece.hexId === key) {
-      cancelHeldPiece();
-      return;
-    }
-    // make sure the traced route actually ends here even if this hex was
-    // never hovered first (e.g. a quick click right after pickup)
     if (state.heldPiece.type === "board") {
-      updateMovePath(hexDesc);
+      // A free (Ctrl) route can legitimately loop back and end on the hex
+      // it started from, so a click there means "run this route", not
+      // "cancel". Only treat it as cancel when no route has been traced.
+      if (state.heldPiece.hexId === key && !pathEndsAt(hexDesc)) {
+        cancelHeldPiece();
+        return;
+      }
+      // make sure the traced route actually ends here even if this hex was
+      // never hovered first (e.g. a quick click right after pickup)
+      if (!pathEndsAt(hexDesc)) {
+        updateMovePath(hexDesc, isFreePathEvent(event));
+      }
     }
     attemptDrop(key);
     return;
@@ -1099,10 +1113,17 @@ function onHexClick(hexDesc) {
   }
 }
 
-function onHexHover(hexDesc) {
+function onHexHover(hexDesc, event) {
   if (state.heldPiece && state.heldPiece.type === "board") {
-    updateMovePath(hexDesc);
+    updateMovePath(hexDesc, isFreePathEvent(event));
   }
+}
+
+// does the traced route currently end on this hex?
+function pathEndsAt(hexDesc) {
+  const held = state.heldPiece;
+  if (!held || held.type !== "board" || !held.path || held.path.length < 2) return false;
+  return sameHex(held.path[held.path.length - 1], hexDesc);
 }
 
 function beginBoardPickup(hexDesc, key, stack, moveCount, event) {
@@ -1133,61 +1154,124 @@ function beginBoardPickup(hexDesc, key, stack, moveCount, event) {
 // backtracks to it, and hovering somewhere the route can't simply reach
 // (because it would exceed the piece's range) snaps to a fresh straight
 // route to that hex instead.
-function updateMovePath(hoveredHexDesc) {
+//
+// Holding Ctrl/Cmd switches to "free" tracing, where an adjacent hover
+// always appends even onto a hex the route already used. That's what makes
+// a there-and-back route possible (step onto a coin, then step home), which
+// plain tracing can't express because revisiting a hex truncates instead.
+// Releasing Ctrl restores the truncate-to-shorten behaviour, and hovering
+// the source without Ctrl still clears the route entirely.
+function updateMovePath(hoveredHexDesc, freeMode) {
   const held = state.heldPiece;
   if (!held || held.type !== "board") return;
   const path = held.path;
   const source = path[0];
-
-  if (hoveredHexDesc.q === source.q && hoveredHexDesc.r === source.r) {
-    if (path.length > 1) {
-      held.path = [source];
-      renderMovePath();
-    }
-    return;
-  }
-
   const range = MOVE_RANGE[held.colors[0]];
-  if (hexDistance(source, hoveredHexDesc) > range) return; // out of reach, ignore
-
-  // backtrack: hovered hex is already on the current route
-  const idx = path.findIndex((h) => h.q === hoveredHexDesc.q && h.r === hoveredHexDesc.r);
-  if (idx !== -1) {
-    if (idx !== path.length - 1) {
-      held.path = path.slice(0, idx + 1);
-      renderMovePath();
-    }
-    return;
-  }
-
   const last = path[path.length - 1];
 
-  // simple extension: hovered hex is adjacent to the route's current end
-  // and there's still room within the piece's range
-  if (hexDistance(last, hoveredHexDesc) === 1 && path.length - 1 < range) {
-    held.path = path.concat([hoveredHexDesc]);
-    renderMovePath();
-    return;
+  if (freeMode) {
+    if (sameHex(last, hoveredHexDesc)) return; // already the route's end
+    // free mode may revisit hexes, so adjacency to the current end is the
+    // only thing that matters — including stepping back onto the source
+    if (hexDistance(last, hoveredHexDesc) === 1 && path.length - 1 < range) {
+      held.path = path.concat([hoveredHexDesc]);
+      renderMovePath();
+      return;
+    }
+    // out of steps, or hovering away from the route's end — fall through to
+    // the shared snap below
+  } else {
+    if (sameHex(hoveredHexDesc, source)) {
+      if (path.length > 1) {
+        held.path = [source];
+        renderMovePath();
+      }
+      return;
+    }
+    if (hexDistance(source, hoveredHexDesc) > range) return; // out of reach
+
+    // backtrack: hovered hex is already on the current route
+    const idx = path.findIndex((h) => sameHex(h, hoveredHexDesc));
+    if (idx !== -1) {
+      if (idx !== path.length - 1) {
+        held.path = path.slice(0, idx + 1);
+        renderMovePath();
+      }
+      return;
+    }
+
+    // simple extension: hovered hex is adjacent to the route's current end
+    // and there's still room within the piece's range
+    if (hexDistance(last, hoveredHexDesc) === 1 && path.length - 1 < range) {
+      held.path = path.concat([hoveredHexDesc]);
+      renderMovePath();
+      return;
+    }
   }
 
   // snap: the freeform trace can't simply reach this hex anymore (it would
   // take more hops than the piece has), so replace it with the canonical
   // straight route from the source
+  if (sameHex(hoveredHexDesc, source)) return; // nothing to snap to
+  if (hexDistance(source, hoveredHexDesc) > range) return;
   held.path = computeHexLine(source, hoveredHexDesc);
   renderMovePath();
+}
+
+// how far each repeated traversal of the same pair of hexes bows away from
+// the straight line between them, so overlapping legs stay distinguishable
+const ROUTE_BOW_STEP = HEX_SIZE * 0.3;
+
+// a route that revisits a hex would otherwise draw its return leg exactly
+// on top of its outbound leg — invisible. Bow each repeat traversal of the
+// same hex pair to alternating sides so every leg is separately visible.
+function bowedSegmentsPathD(pts, path) {
+  const seen = new Map();
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = path[i];
+    const b = path[i + 1];
+    // undirected key: out-and-back over the same pair counts as a repeat
+    const k1 = hexKey(a.q, a.r);
+    const k2 = hexKey(b.q, b.r);
+    const pairKey = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+    const n = seen.get(pairKey) || 0;
+    seen.set(pairKey, n + 1);
+
+    const p = pts[i];
+    const q = pts[i + 1];
+    if (n === 0) {
+      d += ` L ${q.x} ${q.y}`;
+      continue;
+    }
+    const mag = Math.ceil(n / 2) * ROUTE_BOW_STEP;
+    const bow = n % 2 === 1 ? mag : -mag;
+    const dx = q.x - p.x;
+    const dy = q.y - p.y;
+    const len = Math.hypot(dx, dy) || 1;
+    // perpendicular offset applied to the segment's midpoint
+    const cx = (p.x + q.x) / 2 + (-dy / len) * bow * 2;
+    const cy = (p.y + q.y) / 2 + (dx / len) * bow * 2;
+    d += ` Q ${cx} ${cy} ${q.x} ${q.y}`;
+  }
+  return d;
 }
 
 function renderMovePath() {
   pathGroup.innerHTML = "";
   const held = state.heldPiece;
   if (!held || held.type !== "board" || !held.path || held.path.length < 2) return;
-  const pts = held.path.map((h) => {
+  const path = held.path;
+  const pts = path.map((h) => {
     const d = state.hexIndex.get(hexKey(h.q, h.r)) || h;
     return { x: d.x, y: d.y };
   });
 
+  // does the route step onto any hex more than once?
+  const revisits = new Set(path.map((h) => hexKey(h.q, h.r))).size !== path.length;
+
   const line = svgEl("path", {
-    d: catmullRomPathD(pts),
+    d: revisits ? bowedSegmentsPathD(pts, path) : catmullRomPathD(pts),
     fill: "none",
     stroke: "#000",
     "stroke-width": 5,
@@ -1205,11 +1289,34 @@ function renderMovePath() {
   const visible = Math.max(0, total - BOARD_PIECE_R);
   line.setAttribute("stroke-dasharray", visible <= 0.01 ? `0 ${total + 1}` : `${visible} ${total}`);
 
-  pts.forEach((p, i) => {
-    if (i === 0 || i === pts.length - 1) return; // no dot on the origin or the puck-covered end
-    pathGroup.appendChild(
-      svgEl("circle", { cx: p.x, cy: p.y, r: 5, class: "move-route-dot" })
+  if (!revisits) {
+    pts.forEach((p, i) => {
+      if (i === 0 || i === pts.length - 1) return; // skip origin and puck-covered end
+      pathGroup.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: 5, class: "move-route-dot" }));
+    });
+    return;
+  }
+
+  // On a revisiting route, plain dots can't convey order (or that a hex was
+  // used twice), so label each visited hex with its step number(s) instead.
+  // A hex used more than once collects several numbers in one label.
+  const stepsByHex = new Map();
+  path.forEach((h, i) => {
+    if (i === 0) return; // step 0 is where the route starts
+    const key = hexKey(h.q, h.r);
+    if (!stepsByHex.has(key)) stepsByHex.set(key, { pt: pts[i], steps: [] });
+    stepsByHex.get(key).steps.push(i);
+  });
+  stepsByHex.forEach(({ pt, steps }) => {
+    const label = steps.join(",");
+    const g = svgEl("g", { class: "move-route-step" });
+    g.appendChild(
+      svgEl("circle", { cx: pt.x, cy: pt.y, r: label.length > 1 ? 11 : 8.5 })
     );
+    const text = svgEl("text", { x: pt.x, y: pt.y });
+    text.textContent = label;
+    g.appendChild(text);
+    pathGroup.appendChild(g);
   });
 }
 
@@ -1240,7 +1347,20 @@ function computeValidMoveTargets(sourceHexDesc, colors) {
 /* ===================== Drop / cancel ===================== */
 
 function attemptDrop(targetKey) {
-  if (!state.validTargets.has(targetKey)) {
+  // A free (Ctrl) route can loop back and finish on the hex it started
+  // from. computeValidMoveTargets deliberately excludes the source, so
+  // allow it explicitly here — landing back home is always legal, since
+  // the stack it rejoins is the one it just left.
+  const held = state.heldPiece;
+  const returningHome =
+    held &&
+    held.type === "board" &&
+    targetKey === held.hexId &&
+    held.path &&
+    held.path.length > 1 &&
+    hexKey(held.path[held.path.length - 1].q, held.path[held.path.length - 1].r) === held.hexId;
+
+  if (!state.validTargets.has(targetKey) && !returningHome) {
     showMessage("Not a valid spot for that piece.");
     return;
   }

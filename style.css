@@ -162,6 +162,19 @@ html, body {
   fill: #000;
   opacity: 0.85;
 }
+.move-route-step circle {
+  fill: #000;
+  stroke: #f2e26a;
+  stroke-width: 1.5;
+}
+.move-route-step text {
+  fill: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: central;
+  user-select: none;
+}
 
 .capture-boom {
   animation: captureBoom 0.5s ease-out forwards;
