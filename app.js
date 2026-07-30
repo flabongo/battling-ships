@@ -350,6 +350,12 @@ const state = {
   // piece ids currently mid-hop-animation: already placed in the board
   // data model at their destination, but not yet drawn there
   hiddenPieceIds: new Set(),
+  // per player index: null (human) | "easy" | "medium" | "hard"
+  aiLevels: [null, null, null],
+  // bumped whenever the game is disturbed (undo, mode change, toggle) so
+  // queued AI steps from a stale position abandon themselves
+  aiToken: 0,
+  aiTimer: null,
   // 2 or 3 players
   mode: DEFAULT_MODE,
   // index of the bottom-most edge group, cached from board generation so
@@ -374,7 +380,7 @@ function makePlayer(id, shape) {
 
 /* ===================== Build geometry ===================== */
 
-let svg, boardGroup, highlightHexes, coinsGroup, pathGroup, piecesGroup, traysGroup, tokenGroup, effectsGroup;
+let svg, boardGroup, highlightHexes, coinsGroup, pathGroup, piecesGroup, traysGroup, tokenGroup, aiButtonsGroup, effectsGroup;
 
 function buildBoardHexes() {
   const rawHexes = generateAllHexes(R);
@@ -482,6 +488,7 @@ function initSVG() {
   piecesGroup = svgEl("g", { id: "board-pieces" });
   traysGroup = svgEl("g", { id: "trays" });
   tokenGroup = svgEl("g", { id: "first-player-token" });
+  aiButtonsGroup = svgEl("g", { id: "ai-toggles" });
   effectsGroup = svgEl("g", { id: "board-effects" });
 
   svg.appendChild(boardGroup);
@@ -490,6 +497,7 @@ function initSVG() {
   svg.appendChild(piecesGroup);
   svg.appendChild(traysGroup);
   svg.appendChild(tokenGroup);
+  svg.appendChild(aiButtonsGroup);
   svg.appendChild(effectsGroup);
 
   state.hexes.forEach((h) => {
@@ -509,6 +517,7 @@ function initSVG() {
   renderTrays();
   renderPieces();
   renderToken();
+  renderAiButtons();
   updateStatusBar();
   updateModeButtons();
   // the star starts yellow on player 1, so the very first turn already
@@ -1029,6 +1038,7 @@ function rerenderAll() {
   renderCoins();
   renderPieces();
   renderToken();
+  renderAiButtons();
   updateStatusBar();
   applyHighlightClasses();
 }
@@ -1091,6 +1101,7 @@ function startNewGame(mode) {
   state.starYellow = true;
   // invalidate any in-flight hop/coin animation from the abandoned game
   state.animGeneration++;
+  cancelAiWork();
 
   assignPlayersForMode(mode);
   applyFrontRowClasses();
@@ -1101,6 +1112,7 @@ function startNewGame(mode) {
   updateModeButtons();
   rerenderAll();
   maybeDropCoinsForTurnStart();
+  maybeStartAiTurn();
 }
 
 /* ===================== Confirm dialog ===================== */
@@ -1571,11 +1583,19 @@ function undo() {
   state.hiddenPieceIds = new Set();
   hideDragGhost();
   pathGroup.innerHTML = "";
+  // stop any computer player mid-turn: undo is a human taking control, so
+  // it shouldn't instantly be replayed by the AI it just rewound
+  cancelAiWork();
   const snap = state.history.pop();
   restoreSnapshot(snap);
   document.getElementById("winner-banner").classList.toggle("hidden", !state.gameOver);
   rerenderAll();
-  showMessage("Move undone.");
+  const cur = state.currentPlayerIndex;
+  showMessage(
+    isAiPlayer(cur)
+      ? `Move undone. ${state.players[cur].label} is a computer — press Finish Turn to hand play back to it.`
+      : "Move undone."
+  );
 }
 
 function captureIfOpponent(targetKey, movingPlayerId) {
@@ -1933,6 +1953,7 @@ function finishTurn() {
   state.currentPlayerIndex = (state.currentPlayerIndex + 1) % state.players.length;
   rerenderAll();
   maybeDropCoinsForTurnStart();
+  maybeStartAiTurn();
 }
 
 // coins drop at the START of a turn whose player already holds the yellow
@@ -1960,6 +1981,469 @@ function checkWin(player) {
 }
 
 /* ===================== Init ===================== */
+
+/* ===================== Computer players ===================== */
+
+// The game is an economic race: you win by getting all 12 pieces out of
+// your tray, which costs 28 coins against a starting bank of 10. So ~18
+// coins have to be won from contested drops. That makes coin collection
+// the core skill, captures a tempo weapon (they send pieces back to the
+// owner's tray, forcing them to pay again), and cheap pieces the most
+// coin-efficient route to the win condition.
+//
+// Difficulty is expressed purely as evaluation weights plus how much
+// randomness is mixed in, so all three levels share one engine:
+//   easy   - only sees its own progress and bank; no opponent modelling,
+//            no defence, one move per turn, heavy noise, often skips placing
+//   medium - adds coin-seeking, mobility and opponent progress; two moves
+//   hard   - adds defence (avoids leaving pieces capturable) and weighs
+//            opponents more heavily; no noise
+const AI_LEVELS = {
+  // Easy is short-sighted rather than random: no pull toward coins it
+  // can't already reach, so it only banks what happens to land in its lap.
+  easy: {
+    label: "Easy",
+    progress: 10, bank: 1.5, mobility: 0, coinProximity: 0,
+    oppProgress: 0, oppBank: 0, vulnerability: 0,
+    noise: 2.5, skipPlaceChance: 0.3, moveBudget: 1,
+  },
+  medium: {
+    label: "Medium",
+    progress: 10, bank: 1.5, mobility: 0.3, coinProximity: 1.0,
+    oppProgress: 3, oppBank: 0.25, vulnerability: 0,
+    noise: 0.8, skipPlaceChance: 0.05, moveBudget: 2,
+  },
+  hard: {
+    label: "Hard",
+    progress: 10, bank: 1.5, mobility: 0.5, coinProximity: 1.2,
+    oppProgress: 7, oppBank: 0.5, vulnerability: 0.12,
+    noise: 0, skipPlaceChance: 0, moveBudget: 2,
+  },
+};
+// how far away a coin still exerts pull, and the resulting cap on that pull
+const COIN_HORIZON = 10;
+
+const AI_CYCLE = [null, "easy", "medium", "hard"];
+const AI_ACTION_DELAY = 480;
+const PIECES_TO_WIN = STARTING_COUNTS.yellow + STARTING_COUNTS.red + STARTING_COUNTS.blue;
+
+function isAiPlayer(playerId) {
+  return !!state.aiLevels[playerId];
+}
+
+function cycleAiLevel(playerId) {
+  const cur = state.aiLevels[playerId] || null;
+  const next = AI_CYCLE[(AI_CYCLE.indexOf(cur) + 1) % AI_CYCLE.length];
+  state.aiLevels[playerId] = next;
+  cancelAiWork();
+  renderAiButtons();
+  const label = next ? AI_LEVELS[next].label + " computer" : "human";
+  showMessage(`${state.players[playerId].label}: ${label}.`);
+  // Re-evaluate unconditionally: cancelAiWork above killed any queued step,
+  // including one belonging to a *different* player who is mid-turn, so
+  // toggling any button must restart whoever is actually to move.
+  maybeStartAiTurn();
+}
+
+// abandons any queued AI step; anything already scheduled checks the token
+function cancelAiWork() {
+  state.aiToken++;
+  if (state.aiTimer !== null) {
+    clearTimeout(state.aiTimer);
+    state.aiTimer = null;
+  }
+}
+
+/* ---------- lightweight simulation used for scoring candidate actions ---------- */
+
+function makeSimState() {
+  const board = new Map();
+  state.board.forEach((stack, key) => {
+    board.set(key, { playerId: stack.playerId, pieces: stack.pieces.slice() });
+  });
+  return {
+    board,
+    coins: new Map(state.coins),
+    trays: state.players.map((p) => Object.assign({}, p.tray)),
+    banks: state.players.map((p) => p.bank),
+  };
+}
+
+function simCapture(sim, key, movingPlayerId) {
+  const ex = sim.board.get(key);
+  if (ex && ex.playerId !== movingPlayerId) {
+    ex.pieces.forEach((p) => {
+      sim.trays[ex.playerId][p.color] += 1;
+    });
+    sim.board.delete(key);
+  }
+}
+
+function simCollect(sim, key, playerId) {
+  const c = sim.coins.get(key);
+  if (c) {
+    sim.banks[playerId] += c;
+    sim.coins.delete(key);
+  }
+}
+
+function simPlace(sim, playerId, color, key) {
+  simCapture(sim, key, playerId);
+  const cur = sim.board.get(key);
+  const piece = { id: -1, color };
+  if (cur && cur.playerId === playerId) cur.pieces.push(piece);
+  else sim.board.set(key, { playerId, pieces: [piece] });
+  sim.trays[playerId][color] -= 1;
+  sim.banks[playerId] -= PRICES[color];
+  simCollect(sim, key, playerId);
+}
+
+// mirrors executeBoardMove + animateHopMove: every hex the route touches
+// captures and collects, and only the last one receives the pieces
+function simMove(sim, playerId, fromKey, moveCount, route) {
+  const src = sim.board.get(fromKey);
+  if (!src) return;
+  const moved = src.pieces.slice(-moveCount);
+  const remaining = src.pieces.length - moveCount;
+  if (remaining <= 0) sim.board.delete(fromKey);
+  else src.pieces = src.pieces.slice(0, remaining);
+
+  for (let i = 1; i < route.length; i++) {
+    const key = hexKey(route[i].q, route[i].r);
+    simCapture(sim, key, playerId);
+    if (i === route.length - 1) {
+      const cur = sim.board.get(key);
+      if (cur && cur.playerId === playerId) cur.pieces.push(...moved);
+      else sim.board.set(key, { playerId, pieces: moved.slice() });
+    }
+    simCollect(sim, key, playerId);
+  }
+}
+
+function trayTotal(tray) {
+  return tray.yellow + tray.red + tray.blue;
+}
+
+function scoreSim(sim, playerId, w) {
+  let score = 0;
+
+  score += w.progress * (PIECES_TO_WIN - trayTotal(sim.trays[playerId]));
+  score += w.bank * sim.banks[playerId];
+
+  let mobility = 0;
+  if (w.mobility) {
+    sim.board.forEach((stack) => {
+      if (stack.playerId !== playerId) return;
+      stack.pieces.forEach((p) => {
+        mobility += MOVE_RANGE[p.color];
+      });
+    });
+    score += w.mobility * mobility;
+  }
+
+  if (w.oppProgress || w.oppBank) {
+    sim.trays.forEach((tray, pid) => {
+      if (pid === playerId) return;
+      score -= w.oppProgress * (PIECES_TO_WIN - trayTotal(tray));
+      score -= w.oppBank * sim.banks[pid];
+    });
+  }
+
+  // A pull toward coins my pieces haven't reached yet, so they travel
+  // rather than sitting still. This has to stay strictly weaker than the
+  // bank reward for actually banking a coin, or "hover next to it" scores
+  // the same as "take it" and the AI never commits to collecting. With a
+  // linear falloff the strongest possible pull is COIN_ATTRACT_MAX * count,
+  // which is held below w.bank * count.
+  if (w.coinProximity && sim.coins.size) {
+    let cp = 0;
+    sim.coins.forEach((cnt, ck) => {
+      const ch = state.hexIndex.get(ck);
+      if (!ch) return;
+      let bestDist = Infinity;
+      sim.board.forEach((stack, bk) => {
+        if (stack.playerId !== playerId) return;
+        const bh = state.hexIndex.get(bk);
+        if (!bh) return;
+        const d = hexDistance(bh, ch);
+        if (d < bestDist) bestDist = d;
+      });
+      if (bestDist < Infinity) cp += cnt * Math.max(0, 1 - bestDist / COIN_HORIZON);
+    });
+    score += w.coinProximity * cp;
+  }
+
+  // defence: how much of my material is sitting where an opponent could
+  // take it next turn (either by moving onto it, or by placing onto it if
+  // it's parked on their front row)
+  if (w.vulnerability) {
+    let vuln = 0;
+    sim.board.forEach((stack, key) => {
+      if (stack.playerId !== playerId) return;
+      const h = state.hexIndex.get(key);
+      if (!h) return;
+      let threatened = h.frontRowOwner != null && h.frontRowOwner !== playerId;
+      if (!threatened) {
+        sim.board.forEach((os, ok) => {
+          if (threatened || os.playerId === playerId) return;
+          const oh = state.hexIndex.get(ok);
+          if (!oh) return;
+          let reach = 0;
+          os.pieces.forEach((p) => {
+            reach = Math.max(reach, MOVE_RANGE[p.color]);
+          });
+          if (hexDistance(oh, h) <= reach) threatened = true;
+        });
+      }
+      if (threatened) {
+        stack.pieces.forEach((p) => {
+          vuln += w.progress + w.bank * PRICES[p.color];
+        });
+      }
+    });
+    score -= w.vulnerability * vuln;
+  }
+
+  return score;
+}
+
+/* ---------- candidate action generation ---------- */
+
+// every distinct route of 1..range steps from a hex. Routes may double back
+// (the same freedom Ctrl-tracing gives a human), and are deduped by the set
+// of hexes they touch plus where they end, since that is all that affects
+// the outcome.
+function enumerateRoutes(startHex, range) {
+  const out = [];
+  const seen = new Set();
+  const path = [startHex];
+
+  function visit() {
+    if (path.length > 1) {
+      const last = path[path.length - 1];
+      const touched = Array.from(new Set(path.slice(1).map((h) => hexKey(h.q, h.r)))).sort();
+      const sig = hexKey(last.q, last.r) + "#" + touched.join(",");
+      if (!seen.has(sig)) {
+        seen.add(sig);
+        out.push(path.slice());
+      }
+    }
+    if (path.length - 1 >= range) return;
+    const last = path[path.length - 1];
+    for (const d of DIRS) {
+      const nh = state.hexIndex.get(hexKey(last.q + d.q, last.r + d.r));
+      if (!nh) continue;
+      path.push(nh);
+      visit();
+      path.pop();
+    }
+  }
+  visit();
+  return out;
+}
+
+// All action generation/scoring works against a sim snapshot rather than
+// live state, so the same code drives both real play and headless
+// self-play testing (where animations never run).
+function aiPlacementActions(sim, playerId, placedThisTurn) {
+  if (placedThisTurn) return [];
+  const player = state.players[playerId];
+  const actions = [];
+  COLOR_ORDER.forEach((color) => {
+    if (sim.trays[playerId][color] <= 0) return;
+    if (sim.banks[playerId] < PRICES[color]) return;
+    player.frontRow.forEach((h) => {
+      const key = hexKey(h.q, h.r);
+      const stack = sim.board.get(key);
+      if (stack && stack.playerId === playerId && stack.pieces.length >= MAX_STACK) return;
+      actions.push({ type: "place", color, key });
+    });
+  });
+  return actions;
+}
+
+function aiMoveActions(sim, playerId, movedPieceIds) {
+  const actions = [];
+  sim.board.forEach((stack, fromKey) => {
+    if (stack.playerId !== playerId) return;
+    const fromHex = state.hexIndex.get(fromKey);
+    if (!fromHex) return;
+    stack.pieces.forEach((anchor, idx) => {
+      if (movedPieceIds && movedPieceIds.has(anchor.id)) return;
+      const moveCount = stack.pieces.length - idx;
+      const range = MOVE_RANGE[anchor.color];
+      enumerateRoutes(fromHex, range).forEach((route) => {
+        const dest = route[route.length - 1];
+        const destKey = hexKey(dest.q, dest.r);
+        if (destKey !== fromKey) {
+          const target = sim.board.get(destKey);
+          if (target && target.playerId === playerId && target.pieces.length + moveCount > MAX_STACK) return;
+        }
+        actions.push({ type: "move", fromKey, moveCount, route, destKey });
+      });
+    });
+  });
+  return actions;
+}
+
+function applySimAction(sim, playerId, action) {
+  if (action.type === "place") simPlace(sim, playerId, action.color, action.key);
+  else simMove(sim, playerId, action.fromKey, action.moveCount, action.route);
+}
+
+function cloneSim(sim) {
+  const board = new Map();
+  sim.board.forEach((stack, key) => {
+    board.set(key, { playerId: stack.playerId, pieces: stack.pieces.slice() });
+  });
+  return {
+    board,
+    coins: new Map(sim.coins),
+    trays: sim.trays.map((t) => Object.assign({}, t)),
+    banks: sim.banks.slice(),
+  };
+}
+
+function pickBestAction(sim, actions, playerId, w) {
+  if (!actions.length) return null;
+  // the do-nothing baseline, so a computer declines an action that would
+  // only make its position worse
+  let bestScore = scoreSim(sim, playerId, w);
+  let best = null;
+  actions.forEach((a) => {
+    const next = cloneSim(sim);
+    applySimAction(next, playerId, a);
+    let s = scoreSim(next, playerId, w);
+    if (w.noise) s += (Math.random() - 0.5) * 2 * w.noise;
+    if (s > bestScore) {
+      best = a;
+      bestScore = s;
+    }
+  });
+  return best;
+}
+
+/* ---------- turn driver ---------- */
+
+let aiDeclinedPlacement = false;
+
+function maybeStartAiTurn() {
+  cancelAiWork();
+  if (state.gameOver) return;
+  if (!isAiPlayer(state.currentPlayerIndex)) return;
+  aiDeclinedPlacement = false;
+  scheduleAiStep(AI_ACTION_DELAY);
+}
+
+function scheduleAiStep(delay) {
+  const token = state.aiToken;
+  state.aiTimer = setTimeout(() => {
+    state.aiTimer = null;
+    if (token !== state.aiToken) return; // position changed under us
+    aiStep();
+  }, delay);
+}
+
+function aiStep() {
+  if (state.gameOver) return;
+  const playerId = state.currentPlayerIndex;
+  const level = state.aiLevels[playerId];
+  if (!level) return; // handed back to a human mid-turn
+  const w = AI_LEVELS[level];
+
+  const sim = makeSimState();
+
+  // 1. placement (at most one per turn)
+  if (!state.placedThisTurn && !aiDeclinedPlacement) {
+    aiDeclinedPlacement = true;
+    if (Math.random() >= w.skipPlaceChance) {
+      const act = pickBestAction(sim, aiPlacementActions(sim, playerId, state.placedThisTurn), playerId, w);
+      if (act) {
+        const player = state.players[playerId];
+        onTraySlotClick(player, act.color, true, { clientX: 0, clientY: 0 });
+        if (state.heldPiece) {
+          attemptDrop(act.key);
+          scheduleAiStep(AI_ACTION_DELAY);
+          return;
+        }
+      }
+    }
+  }
+
+  // 2. moves
+  if (state.movesUsed < w.moveBudget) {
+    const act = pickBestAction(sim, aiMoveActions(sim, playerId, state.movedPieceIds), playerId, w);
+    if (act) {
+      const fromHex = state.hexIndex.get(act.fromKey);
+      const stack = state.board.get(act.fromKey);
+      if (fromHex && stack) {
+        beginBoardPickup(fromHex, act.fromKey, stack, act.moveCount, { clientX: 0, clientY: 0 });
+        if (state.heldPiece) {
+          state.heldPiece.path = act.route;
+          attemptDrop(act.destKey);
+          // wait out the hop animation (and its own safety-net) before acting again
+          const hops = act.route.length - 1;
+          scheduleAiStep(hops * HOP_DURATION_MS + 450 + AI_ACTION_DELAY);
+          return;
+        }
+      }
+    }
+  }
+
+  // 3. nothing worthwhile left
+  cancelHeldPiece();
+  finishTurn();
+}
+
+/* ---------- the on-board toggle button ---------- */
+
+function robotIcon(s) {
+  const g = svgEl("g", { class: "ai-robot-icon" });
+  g.appendChild(
+    svgEl("line", { x1: 0, y1: -s * 1.0, x2: 0, y2: -s * 0.62, class: "ai-robot-body-stroke", "stroke-width": s * 0.13 })
+  );
+  g.appendChild(svgEl("circle", { cx: 0, cy: -s * 1.08, r: s * 0.14, class: "ai-robot-body" }));
+  g.appendChild(
+    svgEl("rect", { x: -s * 0.64, y: -s * 0.62, width: s * 1.28, height: s * 1.14, rx: s * 0.28, class: "ai-robot-body" })
+  );
+  g.appendChild(svgEl("circle", { cx: -s * 0.25, cy: -s * 0.12, r: s * 0.15, class: "ai-robot-eye" }));
+  g.appendChild(svgEl("circle", { cx: s * 0.25, cy: -s * 0.12, r: s * 0.15, class: "ai-robot-eye" }));
+  g.appendChild(
+    svgEl("rect", { x: -s * 0.3, y: s * 0.18, width: s * 0.6, height: s * 0.13, rx: s * 0.065, class: "ai-robot-eye" })
+  );
+  return g;
+}
+
+function renderAiButtons() {
+  aiButtonsGroup.innerHTML = "";
+  const clearance = PANEL_ROW_WIDTH / 2 + PIECE_R * 1.3;
+  state.players.forEach((player) => {
+    // mirrors the first-player token, which sits on the panel's other end
+    const pos = {
+      x: player.trayOrigin.x - player.trayTangent.x * clearance,
+      y: player.trayOrigin.y - player.trayTangent.y * clearance,
+    };
+    const level = state.aiLevels[player.id];
+    const g = svgEl("g", {
+      class: "ai-toggle " + (level ? "ai-" + level : "ai-off"),
+      transform: `translate(${pos.x}, ${pos.y})`,
+      "data-player": player.id,
+    });
+    const title = svgEl("title", {});
+    title.textContent = level
+      ? `${player.label}: ${AI_LEVELS[level].label} computer (click to change)`
+      : `${player.label}: human (click for computer player)`;
+    g.appendChild(title);
+    const r = PIECE_R * 0.85;
+    g.appendChild(svgEl("circle", { cx: 0, cy: 0, r, class: "ai-toggle-bg" }));
+    g.appendChild(robotIcon(r * 0.6));
+    g.addEventListener("click", (e) => {
+      e.stopPropagation();
+      cycleAiLevel(player.id);
+    });
+    aiButtonsGroup.appendChild(g);
+  });
+}
 
 function init() {
   buildBoardHexes();

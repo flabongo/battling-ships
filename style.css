@@ -258,6 +258,33 @@ html, body {
   stroke-width: 1;
 }
 
+/* per-player human/computer toggle */
+.ai-toggle { cursor: pointer; }
+.ai-toggle-bg {
+  fill: rgba(20, 15, 10, 0.85);
+  stroke: #7a6144;
+  stroke-width: 1.5;
+  transition: fill 0.15s ease, stroke 0.15s ease;
+}
+.ai-toggle:hover .ai-toggle-bg { stroke: #ffcf7d; }
+.ai-toggle.ai-easy   .ai-toggle-bg { fill: #4a7fd1; stroke: #b3d0f7; }
+.ai-toggle.ai-medium .ai-toggle-bg { fill: #f2c14e; stroke: #ffeab5; }
+.ai-toggle.ai-hard   .ai-toggle-bg { fill: #d94f4f; stroke: #ffc0c0; }
+
+.ai-robot-body { fill: #8b7a63; }
+.ai-robot-body-stroke { stroke: #8b7a63; stroke-linecap: round; }
+.ai-robot-eye { fill: #17120d; }
+/* once a difficulty is on, invert the robot so it reads against the colour */
+.ai-toggle.ai-easy .ai-robot-body,
+.ai-toggle.ai-medium .ai-robot-body,
+.ai-toggle.ai-hard .ai-robot-body { fill: #17120d; }
+.ai-toggle.ai-easy .ai-robot-body-stroke,
+.ai-toggle.ai-medium .ai-robot-body-stroke,
+.ai-toggle.ai-hard .ai-robot-body-stroke { stroke: #17120d; }
+.ai-toggle.ai-easy .ai-robot-eye,
+.ai-toggle.ai-medium .ai-robot-eye,
+.ai-toggle.ai-hard .ai-robot-eye { fill: #ffffff; }
+
 .player-panel-bg.active {
   stroke: #ffcf7d;
   stroke-width: 2;
