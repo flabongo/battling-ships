@@ -2087,10 +2087,15 @@ function simCollect(sim, key, playerId) {
   }
 }
 
+// hypothetical pieces need ids that are unique (so "this piece already
+// moved" bookkeeping can tell them apart) and can never collide with real
+// board piece ids, which count up from 1
+let simPieceIdSeq = -1;
+
 function simPlace(sim, playerId, color, key) {
   simCapture(sim, key, playerId);
   const cur = sim.board.get(key);
-  const piece = { id: -1, color };
+  const piece = { id: simPieceIdSeq--, color };
   if (cur && cur.playerId === playerId) cur.pieces.push(piece);
   else sim.board.set(key, { playerId, pieces: [piece] });
   sim.trays[playerId][color] -= 1;
