@@ -1991,31 +1991,42 @@ function checkWin(player) {
 // owner's tray, forcing them to pay again), and cheap pieces the most
 // coin-efficient route to the win condition.
 //
+// The single biggest skill in this game is harvest speed. A Blue costs 6
+// coins but moves 3 hexes a turn, so it pays for itself many times over
+// against an army of 1-hex Yellows; buying cheap pieces first looks
+// efficient and loses the coin race badly. `mobility` (the summed range of
+// pieces on the board) is what buys that insight, and it has a sharp
+// threshold: below ~4 the 6-coin price tag still outweighs the range and
+// the computer hoards Yellows, at 4+ it starts fielding Blues and roughly
+// quadruples its coin income. Measured against the old mobility-0.5
+// weighting, mobility>=4 wins 24-0 and races at ~12 turns, the floor.
+//
 // Difficulty is expressed purely as evaluation weights plus how much
 // randomness is mixed in, so all three levels share one engine:
-//   easy   - only sees its own progress and bank; no opponent modelling,
-//            no defence, one move per turn, heavy noise, often skips placing
-//   medium - adds coin-seeking, mobility and opponent progress; two moves
-//   hard   - adds defence (avoids leaving pieces capturable) and weighs
-//            opponents more heavily; no noise
+//   easy   - buys cheap slow pieces and never travels for coins
+//   medium - travels for coins, but still under the range threshold
+//   hard   - invests in range, out-harvests, and defends
 const AI_LEVELS = {
   // Easy is short-sighted rather than random: no pull toward coins it
-  // can't already reach, so it only banks what happens to land in its lap.
+  // can't already reach, and no sense that range is worth paying for, so
+  // it fields slow Yellows and only banks what lands in its lap.
   easy: {
     label: "Easy",
     progress: 10, bank: 1.5, mobility: 0, coinProximity: 0,
     oppProgress: 0, oppBank: 0, vulnerability: 0,
     noise: 2.5, skipPlaceChance: 0.3, moveBudget: 1,
   },
+  // Medium hunts coins properly but stays deliberately below the range
+  // threshold, so it is still out-harvested by a player who buys Blue.
   medium: {
     label: "Medium",
-    progress: 10, bank: 1.5, mobility: 0.3, coinProximity: 1.0,
+    progress: 10, bank: 1.5, mobility: 2.0, coinProximity: 1.0,
     oppProgress: 3, oppBank: 0.25, vulnerability: 0,
     noise: 0.8, skipPlaceChance: 0.05, moveBudget: 2,
   },
   hard: {
     label: "Hard",
-    progress: 10, bank: 1.5, mobility: 0.5, coinProximity: 1.2,
+    progress: 10, bank: 1.5, mobility: 6.0, coinProximity: 1.2,
     oppProgress: 7, oppBank: 0.5, vulnerability: 0.12,
     noise: 0, skipPlaceChance: 0, moveBudget: 2,
   },
